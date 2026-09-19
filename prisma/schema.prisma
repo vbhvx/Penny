@@ -1,0 +1,466 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum AccountType {
+  CHECKING
+  SAVINGS
+  CREDIT_CARD
+  CASH
+  INVESTMENT
+  LOAN
+  OTHER
+}
+
+enum AccountSourceType {
+  MANUAL
+  IMPORTED
+  CONNECTED_PROVIDER
+}
+
+enum CategoryType {
+  EXPENSE
+  INCOME
+  TRANSFER
+}
+
+enum ImportStatus {
+  PENDING
+  PREVIEWED
+  COMMITTED
+  CANCELLED
+  FAILED
+}
+
+enum RowValidationStatus {
+  VALID
+  INVALID
+  DUPLICATE_CONFIRMED
+  DUPLICATE_PROBABLE
+  SKIPPED
+}
+
+enum TransactionSourceType {
+  MANUAL
+  IMPORTED
+  PROVIDER
+  SIMULATED
+}
+
+enum TransactionType {
+  PURCHASE
+  INCOME
+  FEE
+  TRANSFER
+  REFUND
+  REVERSAL
+  OTHER
+}
+
+enum TransactionStatus {
+  PENDING
+  POSTED
+  REVERSED
+}
+
+enum CategorizationSource {
+  RULE
+  PROVIDER
+  AI
+  USER
+  DEFAULT
+}
+
+enum BudgetPeriod {
+  MONTHLY
+  QUARTERLY
+  ANNUAL
+  CUSTOM
+}
+
+enum RecurringFrequency {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+  QUARTERLY
+  ANNUALLY
+}
+
+enum RecurringStatus {
+  DETECTED
+  CONFIRMED
+  DISMISSED
+  CANCELLED
+}
+
+model User {
+  id               String   @id @default(cuid())
+  email            String   @unique
+  name             String
+  passwordHash     String
+  defaultCurrency  String   @default("USD")
+  locale           String   @default("en-US")
+  timezone         String   @default("UTC")
+  isDemo           Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  accounts         FinancialAccount[]
+  transactions     Transaction[]
+  importBatches    ImportBatch[]
+  budgets          Budget[]
+  recurring        RecurringPaymentCandidate[]
+  insights         SpendingInsight[]
+  forecasts        CashFlowForecast[]
+  auditEvents      TransactionAuditEvent[]
+  categories       TransactionCategory[]
+  rules            CategorizationRule[]
+  notificationPref NotificationPreference?
+  assistantLogs    AssistantInteraction[]
+
+  @@map("users")
+}
+
+model FinancialAccount {
+  id                String            @id @default(cuid())
+  userId            String
+  name              String
+  type              AccountType       @default(CHECKING)
+  currency          String            @default("USD")
+  institutionName   String?
+  accountNumberMask String?
+  sourceType        AccountSourceType @default(MANUAL)
+  isArchived        Boolean           @default(false)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  user                User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions        Transaction[]
+  balanceObservations AccountBalanceObservation[]
+
+  @@index([userId])
+  @@map("financial_accounts")
+}
+
+model AccountBalanceObservation {
+  id              String   @id @default(cuid())
+  accountId       String
+  observedBalance Decimal  @db.Decimal(18, 4)
+  currency        String
+  observationDate DateTime
+  source          String   @default("MANUAL_ENTRY")
+  notes           String?
+  createdAt       DateTime @default(now())
+
+  account FinancialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, observationDate])
+  @@map("account_balance_observations")
+}
+
+model TransactionCategory {
+  id        String       @id @default(cuid())
+  userId    String?
+  name      String
+  slug      String
+  type      CategoryType @default(EXPENSE)
+  icon      String?
+  color     String?
+  isSystem  Boolean      @default(false)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  user         User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+  budgets      Budget[]
+  rules        CategorizationRule[]
+
+  @@unique([userId, slug])
+  @@index([userId])
+  @@map("transaction_categories")
+}
+
+model CategorizationRule {
+  id                 String   @id @default(cuid())
+  userId             String
+  categoryId         String
+  merchantPattern    String
+  descriptionPattern String?
+  priority           Int      @default(0)
+  createdAt          DateTime @default(now())
+
+  user     User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category TransactionCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("categorization_rules")
+}
+
+model ImportBatch {
+  id              String       @id @default(cuid())
+  userId          String
+  accountId       String?
+  fileName        String
+  fileHash        String
+  format          String       @default("GENERIC_CSV")
+  status          ImportStatus @default(PENDING)
+  totalRows       Int          @default(0)
+  acceptedRows    Int          @default(0)
+  invalidRows     Int          @default(0)
+  duplicateRows   Int          @default(0)
+  currencySummary Json?
+  dateRangeStart  DateTime?
+  dateRangeEnd    DateTime?
+  errorSummary    String?
+  createdAt       DateTime     @default(now())
+  committedAt     DateTime?
+
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+  rowResults   ImportRowResult[]
+
+  @@index([userId, fileHash])
+  @@map("import_batches")
+}
+
+model ImportRowResult {
+  id                       String              @id @default(cuid())
+  importBatchId            String
+  rowIndex                 Int
+  rawValues                Json
+  status                   RowValidationStatus @default(VALID)
+  rejectionReason          String?
+  parsedAmount             Decimal?            @db.Decimal(18, 4)
+  parsedDate               DateTime?
+  parsedDescription        String?
+  parsedCurrency           String?
+  duplicateOfTransactionId String?
+
+  importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+
+  @@index([importBatchId, rowIndex])
+  @@map("import_row_results")
+}
+
+model Transaction {
+  id                   String                @id @default(cuid())
+  userId               String
+  accountId            String
+  importBatchId        String?
+  sourceType           TransactionSourceType @default(MANUAL)
+  externalId           String?
+  contentHash          String?
+  transactionDate      DateTime
+  postedAt             DateTime?
+  originalDescription  String
+  normalizedMerchant   String?
+  amount               Decimal               @db.Decimal(18, 4)
+  currency             String                @default("USD")
+  transactionType      TransactionType       @default(PURCHASE)
+  status               TransactionStatus     @default(POSTED)
+  categoryId           String?
+  categorizationSource CategorizationSource  @default(DEFAULT)
+  needsReview          Boolean               @default(false)
+  transferGroupId      String?
+  relatedTransactionId String?
+  notes                String?
+  tags                 Json?
+  isDemo               Boolean               @default(false)
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+
+  user                 User                            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account              FinancialAccount                @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  category             TransactionCategory?            @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  importBatch          ImportBatch?                    @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  transferGroup        TransferGroup?                  @relation(fields: [transferGroupId], references: [id], onDelete: SetNull)
+  auditEvents          TransactionAuditEvent[]
+  recurringOccurrences RecurringPaymentOccurrence[]
+
+  @@index([userId, transactionDate])
+  @@index([userId, categoryId])
+  @@index([userId, accountId])
+  @@index([userId, contentHash])
+  @@index([accountId, externalId])
+  @@map("transactions")
+}
+
+model TransferGroup {
+  id          String   @id @default(cuid())
+  userId      String
+  description String?
+  createdAt   DateTime @default(now())
+
+  transactions Transaction[]
+
+  @@index([userId])
+  @@map("transfer_groups")
+}
+
+model TransactionAuditEvent {
+  id            String   @id @default(cuid())
+  transactionId String
+  userId        String
+  action        String
+  previousState Json?
+  newState      Json?
+  reason        String?
+  createdAt     DateTime @default(now())
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([transactionId])
+  @@index([userId])
+  @@map("transaction_audit_events")
+}
+
+model Budget {
+  id             String       @id @default(cuid())
+  userId         String
+  categoryId     String?
+  name           String
+  period         BudgetPeriod @default(MONTHLY)
+  limitAmount    Decimal      @db.Decimal(18, 4)
+  currency       String       @default("USD")
+  alertThreshold Decimal      @default(0.80) @db.Decimal(5, 2)
+  startDate      DateTime
+  endDate        DateTime?
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  user     User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category TransactionCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  @@index([userId, isActive])
+  @@map("budgets")
+}
+
+model RecurringPaymentCandidate {
+  id                    String             @id @default(cuid())
+  userId                String
+  merchant              String
+  expectedAmount        Decimal            @db.Decimal(18, 4)
+  currency              String             @default("USD")
+  frequency             RecurringFrequency @default(MONTHLY)
+  confidenceScore       Decimal            @db.Decimal(3, 2)
+  confidenceExplanation String
+  detectionEvidence     Json
+  reviewStatus          RecurringStatus    @default(DETECTED)
+  firstObservedDate     DateTime
+  lastObservedDate      DateTime
+  nextExpectedDate      DateTime?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  user        User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  occurrences RecurringPaymentOccurrence[]
+
+  @@index([userId, reviewStatus])
+  @@map("recurring_payment_candidates")
+}
+
+model RecurringPaymentOccurrence {
+  id                   String @id @default(cuid())
+  recurringCandidateId String
+  transactionId        String
+
+  recurringCandidate RecurringPaymentCandidate @relation(fields: [recurringCandidateId], references: [id], onDelete: Cascade)
+  transaction        Transaction               @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@unique([recurringCandidateId, transactionId])
+  @@map("recurring_payment_occurrences")
+}
+
+model ExchangeRateObservation {
+  id            String   @id @default(cuid())
+  baseCurrency  String
+  quoteCurrency String
+  rate          Decimal  @db.Decimal(18, 6)
+  effectiveDate DateTime
+  provider      String   @default("SYSTEM_FALLBACK")
+  rateType      String   @default("SPOT")
+  retrievedAt   DateTime @default(now())
+
+  @@unique([baseCurrency, quoteCurrency, effectiveDate, provider])
+  @@index([baseCurrency, quoteCurrency, effectiveDate])
+  @@map("exchange_rate_observations")
+}
+
+model SpendingInsight {
+  id                       String   @id @default(cuid())
+  userId                   String
+  insightType              String
+  title                    String
+  plainLanguageExplanation String
+  dateRangeStart           DateTime
+  dateRangeEnd             DateTime
+  reportingCurrency        String   @default("USD")
+  calculationVersion       String   @default("v1.0")
+  evidenceData             Json
+  isDismissed              Boolean  @default(false)
+  createdAt                DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isDismissed])
+  @@map("spending_insights")
+}
+
+model CashFlowForecast {
+  id                     String   @id @default(cuid())
+  userId                 String
+  horizonDays            Int      @default(30)
+  openingBalance         Decimal  @db.Decimal(18, 4)
+  openingBalanceSource   String   @default("CALCULATED_LEDGER")
+  expectedInflows        Decimal  @db.Decimal(18, 4)
+  expectedOutflows       Decimal  @db.Decimal(18, 4)
+  projectedClosingBalance Decimal @db.Decimal(18, 4)
+  currency               String   @default("USD")
+  assumptions            Json
+  calculationVersion     String   @default("v1.0")
+  createdAt              DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("cash_flow_forecasts")
+}
+
+model NotificationPreference {
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  budgetAlerts          Boolean  @default(true)
+  recurringBillsAlerts  Boolean  @default(true)
+  largeExpenseAlerts    Boolean  @default(true)
+  largeExpenseThreshold Decimal  @default(500) @db.Decimal(18, 4)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_preferences")
+}
+
+model AssistantInteraction {
+  id                String   @id @default(cuid())
+  userId            String
+  userPrompt        String
+  assistantResponse String
+  toolsCalled       Json?
+  modelProvider     String   @default("GEMINI_OR_RULE_BASED")
+  latencyMs         Int?
+  createdAt         DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("assistant_interactions")
+}
+
