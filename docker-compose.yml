@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: penny-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: pennypassword
+      POSTGRES_DB: penny
+    ports:
+      - "5432:5432"
+    volumes:
+      - penny-postgres-data:/var/lib/postgresql/data
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: penny-app
+    restart: always
+    depends_on:
+      - db
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: "postgresql://postgres:pennypassword@db:5432/penny?schema=public"
+      SESSION_SECRET: "penny-super-secret-session-key-32chars-minimum-production"
+      NODE_ENV: "production"
+      PORT: 3000
+      GEMINI_API_KEY: ""
+
+volumes:
+  penny-postgres-data:
+
