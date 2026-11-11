@@ -4,9 +4,19 @@ import { cookies } from "next/headers";
 import { NextRequest } from "next/server";
 import prisma from "@/lib/db/prisma";
 
-const SECRET_KEY = new TextEncoder().encode(
-  process.env.SESSION_SECRET || "penny-default-insecure-secret-key-32chars-min!!"
-);
+const DEV_FALLBACK_SECRET = "penny-default-insecure-secret-key-32chars-min!!";
+
+// The fallback only applies outside production (local dev and tests).
+function getSigningSecret(): Uint8Array {
+  const secret = process.env.SESSION_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("SESSION_SECRET must be set in production");
+    }
+    return new TextEncoder().encode(DEV_FALLBACK_SECRET);
+  }
+  return new TextEncoder().encode(secret);
+}
 
 const SESSION_COOKIE_NAME = "penny_session";
 const SESSION_DURATION_SECONDS = 60 * 60 * 24 * 7; // 7 days
@@ -34,12 +44,12 @@ export async function createSessionToken(payload: SessionPayload): Promise<strin
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(`${SESSION_DURATION_SECONDS}s`)
-    .sign(SECRET_KEY);
+    .sign(getSigningSecret());
 }
 
 export async function verifySessionToken(token: string): Promise<SessionPayload | null> {
   try {
-    const { payload } = await jwtVerify(token, SECRET_KEY, {
+    const { payload } = await jwtVerify(token, getSigningSecret(), {
       algorithms: ["HS256"],
     });
     return payload as unknown as SessionPayload;
